@@ -147,7 +147,7 @@ idf.py -B build-sticks3-release `
 idf.py -p COMx -B build-sticks3-release flash
 ```
 
-- 其他板：换 `sdkconfig.defaults.<board>`(n16r8 / cardputer 已有）即可。
+- 其他已验证板型：换对应的 `sdkconfig.defaults.<board>`（如 `n16r8`）即可。
 
 ## 项目结构
 
