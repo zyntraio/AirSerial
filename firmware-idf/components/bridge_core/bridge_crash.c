@@ -32,7 +32,15 @@ static struct {
  * panic handler 打完全部日志、即将 panic_restart() 之前调用，
  * 此时内存安全、RTC 内存尚活，禁止碰 flash/网络/复杂操作。
  * 写完全部字段后 abort_reason 字段保留（可能已被 bridge_crash_abort() 预写）。
- */
+ *
+ * IDF 6.0.3 兼容性（2026-10-18 实证）：
+ * port/soc/<soc>/reset_reason.c 里的 set_hint 确实是 strong，但该对象只在有代码
+ * 引用 esp_reset_reason() 时才被链接；当前固件无人引用 → 不进 ELF，
+ * panic.c 的 weak 版 + 本 strong override 生效（nm 实测：全 ELF 唯一
+ * set_hint 符号指向本函数）。已通过 !airsn crashtest 全链路验证：
+ * panic → 本 hook → 重启 → try_load_past 正确读出 PANIC + abort detail。
+ * 若未来某组件引入 esp_reset_reason() 引用，会触发 duplicate symbol
+ * 链接错误（构建期报警，非静默失效），届时改为包装 esp_reset_reason 侧。 */
 void esp_reset_reason_set_hint(esp_reset_reason_t hint)
 {
     s_crash_info.magic = MAGIC;

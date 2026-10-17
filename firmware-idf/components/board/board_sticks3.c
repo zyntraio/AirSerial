@@ -89,11 +89,16 @@ static board_info_t s_info = {
 #define BOARD_KEY1_GPIO  11   /* KEY1 — 电源键/长按复位 */
 #define BOARD_KEY2_GPIO  12   /* KEY2 — 切换 STATUS/TERMINAL view */
 
-/* — AirSerial 作为远程烧录器的 DTR/RTS（输出，active-low，idle=HIGH）—
+/* — AirSerial 作为远程烧录器的 DTR/RTS（开漏输出，idle=释放/高阻）—
  *   路径 B：AirSerial 直接替代 USB-UART 桥，DTR/RTS 接目标板 RST/GPIO0
+ *   信号语义按 esptool/标准自动复位电路约定（esptool reset.py: RTS→EN, DTR→IO0）：
+ *     客户端 RTS(assert) → G3 → 目标板 EN 低（复位）
+ *     客户端 DTR(assert) → G6 → 目标板 IO0 低（下载模式）
+ *   开漏（非推挽）：与真实 USB-UART 桥开集电极一致；空闲释放由目标板
+ *   板上拉定义电平，避免与目标板电平打架；探测/误接 GND 时无持续短路电流
  *   选 G3/G6：排针空闲，不跟 LCD/I2C/USB/bridge_uart 冲突 */
-#define BOARD_DTR_GPIO   3    /* → 目标板 EN/RST (低脉冲复位) */
-#define BOARD_RTS_GPIO   6    /* → 目标板 GPIO0/BOOT (低=下载模式) */
+#define BOARD_DTR_GPIO   6    /* 客户端 DTR → 目标板 IO0/BOOT (低=下载模式) */
+#define BOARD_RTS_GPIO   3    /* 客户端 RTS → 目标板 EN/RST (低脉冲复位) */
 
 const board_info_t *board_get_info(void)
 {
@@ -427,8 +432,12 @@ esp_err_t board_init(void)
 
 /* =============================================================
  *  DTR/RTS — AirSerial 作为远程烧录器（路径 B）
- *  active-low: idle=HIGH(1), assert=LOW(0)
- *  esptool 时序: DTR=LOW,RTS=HIGH → reset; 然后 RTS=LOW → bootloader
+ *  开漏: assert=驱动低(0), idle=释放(1,高阻,电平由目标板上拉定义)
+ *  esptool classic_bootloader_reset（RTS→EN, DTR→IO0）:
+ *    RTS assert(EN 低, 芯片复位) → 100ms → DTR assert(IO0 低)
+ *    → RTS deassert(EN 高, 以 IO0=低 释放 → ROM 下载模式) → 50ms → DTR deassert
+ *  ⚠ 此前 DTR/RTS 与 G3/G6 交叉映射，复位释放瞬间 IO0=高 → 目标板
+ *    正常启动而非下载模式，default-reset 握手必败（alpha10 修复）
  * ============================================================= */
 
 static bool s_serial_ctrl_inited;
@@ -438,7 +447,7 @@ esp_err_t board_serial_ctrl_init(void)
     if (s_serial_ctrl_inited) return ESP_OK;
 
     gpio_config_t cfg = {
-        .mode = GPIO_MODE_OUTPUT,
+        .mode = GPIO_MODE_OUTPUT_OD,
         .pin_bit_mask = (1ULL << BOARD_DTR_GPIO) | (1ULL << BOARD_RTS_GPIO),
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -446,12 +455,12 @@ esp_err_t board_serial_ctrl_init(void)
     };
     ESP_ERROR_CHECK(gpio_config(&cfg));
 
-    /* idle 状态: DTR=HIGH, RTS=HIGH (active-low, 不 assert 任何信号) */
+    /* idle 状态: 释放(高阻), 电平由目标板板上拉定义 */
     gpio_set_level(BOARD_DTR_GPIO, 1);
     gpio_set_level(BOARD_RTS_GPIO, 1);
 
     s_serial_ctrl_inited = true;
-    ESP_LOGI(TAG, "DTR/RTS init: DTR=G%d RTS=G%d (idle=HIGH)",
+    ESP_LOGI(TAG, "DTR/RTS init: DTR=G%d RTS=G%d (idle=release/OD)",
              BOARD_DTR_GPIO, BOARD_RTS_GPIO);
     return ESP_OK;
 }

@@ -59,7 +59,7 @@
 
 下例主机名按连接方式替换：直连 AP 用 `192.168.4.1`;STA 模式用 `airserial-xxxx.local` 或路由器分配的 IP(Windows 解析不了 `.local` 时直接用 IP)。
 
-**USB Host 路线**（目标板 USB 口直插桥的 OTG 口，默认握手已验证，自动进下载模式免按键）:
+**USB Host 路线**（目标板 USB 口直插桥的 OTG 口，默认握手已验证，自动进下载模式免按键；⚠️ StickS3 的 Type-C 口不对外供电，需自供电 OTG 方案，见下文"USB Host 模式说明"）:
 
 ```powershell
 # 探芯片
@@ -102,6 +102,7 @@ WebSocket 终端：浏览器开 portal → Serial 页，即开即用。
 
 ## USB Host 模式说明
 
+- **StickS3 需要自供电 OTG 方案**：StickS3 的 Type-C 口 VBUS 只进不出（电池供电设备，无 5V 输出能力），目标板直插是**没有电的**。必须用带 5V 注入的 OTG 转接头/线（或供电 USB Hub），或者目标板独立供电——无论哪种方式，目标板 GND 都会经 USB 线与桥共地，无需额外地线。N16R8 DevKit 这类经 USB 口取电的开发板，OTG 口 VBUS 与供电口共轨，通常可直接输出 5V，无此限制。
 - **默认 OFF**。SHARED\_PHY 拓扑板（StickS3 这类单 Type-C 口）上，USB-OTG 与控制台 USB-Serial-JTAG 共用同一个内置 PHY，开 Host 后**本机 USB 控制台（COM 口）会断开**——这是硬件拓扑决定的，不是 bug。桥功能（WiFi/RFC2217）不受影响。
 - 开关方式：portal 的 USB Host 卡片，或 CLI `!airsn usbhost on|off`，均写 NVS 后**重启生效**。
 - 关闭（host\_off）后软重启即可恢复 USB-Serial-JTAG 枚举（v0.3.1-alpha 起固件会在启动时强制把 PHY 归位，无需断电）。
@@ -116,7 +117,7 @@ WebSocket 终端：浏览器开 portal → Serial 页，即开即用。
 | 脚1 GND       | GND                   |
 
 - 桥 UART1 默认 115200 8N1，可经 RFC2217 / CLI 切到 921600。
-- DTR=GPIO3、RTS=GPIO6(active-low）可接目标 EN/GPIO0 实现自动复位；目标板 EN 不可达时（如 S3-Zero)，手动进下载模式（按住 BOOT→点 RESET→松）再 `--before no-reset-no-sync`。
+- 自动复位信号（active-low）按 esptool 标准约定：**RTS=GPIO3 → 目标 EN**、**DTR=GPIO6 → 目标 GPIO0**，接好即可远程进下载模式免按键；目标板 EN 不可达时（如 S3-Zero 无焊盘），手动进下载模式（按住 BOOT→点 RESET→松）再 `--before no-reset-no-sync`。
 
 ***
 

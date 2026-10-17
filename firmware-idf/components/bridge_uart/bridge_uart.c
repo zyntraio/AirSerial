@@ -90,7 +90,10 @@ static const bridge_serial_transport_t s_uart_transport = {
     .arg  = NULL,
 };
 
-/* —— RX task：从 UART read，灌 bridge_serial_on_rx —— */
+/* —— RX task：事件驱动，UART_DATA 到达即读即灌 bridge_serial_on_rx ——
+ * 不可用 uart_read_bytes(sizeof, 100ms) 轮询：它凑不满长度就等满超时，
+ * 每个小包被强行批处理 ~100ms，恰好顶死 esptool 0.1s SYNC 窗口（35/35 全败）。
+ * ISR 在 FIFO 阈值(64B)或空闲超时(~2字符)时即投递 DATA 事件，延迟 <1ms */
 static void uart_rx_task(void *arg)
 {
     (void)arg;
@@ -100,26 +103,29 @@ static void uart_rx_task(void *arg)
              BRIDGE_UART_NUM, s_params.gpio_tx, s_params.gpio_rx);
 
     while (1) {
-        /* 读超时 100ms：适配 stream buffer 的低延迟 */
-        int len = uart_read_bytes(BRIDGE_UART_NUM, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(100));
-        if (len > 0) {
+        uart_event_t ev;
+        /* 等事件；100ms 超时兜底防队列溢出丢事件导致停摆 */
+        if (s_uart_evt_queue == NULL ||
+            xQueueReceive(s_uart_evt_queue, &ev, pdMS_TO_TICKS(100)) != pdTRUE) {
+            ev.type = UART_EVENT_MAX;
+        }
+        /* 统计真正的字节丢失事件 */
+        switch (ev.type) {
+        case UART_FIFO_OVF:    s_dbg_fifo_ovf++;    break;
+        case UART_BUFFER_FULL: s_dbg_buf_full++;    break;
+        case UART_FRAME_ERR:   s_dbg_frame_err++;   break;
+        case UART_PARITY_ERR:  s_dbg_parity_err++;  break;
+        case UART_BREAK:       s_dbg_break++;       break;
+        default: break;
+        }
+        /* 任何事件（DATA/溢出/兜底超时）都把现存字节排空 */
+        int len = uart_read_bytes(BRIDGE_UART_NUM, rx_buf, sizeof(rx_buf), 0);
+        while (len > 0) {
             s_dbg_rx_bytes += (size_t)len;
             /* 主 RX 环无读者时会返回 false，但 fanout 订阅者已收到本批，忽略返回值；
              * 绝不在此打日志——921600 突发期每批一条同步日志会卡住本任务撑爆驱动 ring */
             (void)bridge_serial_on_rx(rx_buf, (size_t)len);
-        }
-        /* 排空 UART 事件队列，统计真正的字节丢失事件（队列在 driver install 时注册） */
-        uart_event_t ev;
-        while (s_uart_evt_queue != NULL &&
-               xQueueReceive(s_uart_evt_queue, &ev, 0) == pdTRUE) {
-            switch (ev.type) {
-            case UART_FIFO_OVF:   s_dbg_fifo_ovf++;  break;
-            case UART_BUFFER_FULL: s_dbg_buf_full++; break;
-            case UART_FRAME_ERR:  s_dbg_frame_err++; break;
-            case UART_PARITY_ERR: s_dbg_parity_err++; break;
-            case UART_BREAK:      s_dbg_break++;     break;
-            default: break;
-            }
+            len = uart_read_bytes(BRIDGE_UART_NUM, rx_buf, sizeof(rx_buf), 0);
         }
     }
 }
@@ -290,8 +296,20 @@ esp_err_t bridge_uart_set_params(const bridge_uart_params_t *params)
 
     if (!changed) return ESP_OK;
 
-    s_ready = false;
-    esp_err_t ret = uart_config_and_open(false);
+    /* 热改参：不 delete/reinstall 驱动（rx 任务常驻 uart_read_bytes，
+     * 拆驱动会把内部锁从读者脚下抽走 → spinlock assert 重启；且重装窗口
+     * 恰好落在 esptool SYNC 等待期内吃掉回包）。uart_set_* 可在运行中调用 */
+    static const uart_parity_t parity_map[] = { UART_PARITY_DISABLE, UART_PARITY_ODD, UART_PARITY_EVEN };
+    esp_err_t ret = uart_set_baudrate(BRIDGE_UART_NUM, s_params.baud_rate);
+    if (ret == ESP_OK)
+        ret = uart_set_word_length(BRIDGE_UART_NUM, (uart_word_length_t)(s_params.data_bits - 5));
+    if (ret == ESP_OK)
+        ret = uart_set_parity(BRIDGE_UART_NUM, parity_map[s_params.parity]);
+    if (ret == ESP_OK)
+        ret = uart_set_stop_bits(BRIDGE_UART_NUM,
+                                 s_params.stop_bits == 2 ? UART_STOP_BITS_2 : UART_STOP_BITS_1);
+    /* 切参瞬间线上的乱码字节清掉，避免污染后续 SLIP 解码 */
+    uart_flush_input(BRIDGE_UART_NUM);
     if (ret == ESP_OK) {
         s_ready = true;
         ESP_LOGI(TAG, "params updated: %u baud %d%c%d",
