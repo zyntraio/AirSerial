@@ -1,0 +1,41 @@
+# AirSerial — 通用默认配置（两个板子共用）
+# 板子差异（flash 大小 / console / 分区表）放 sdkconfig.defaults.<board>
+
+# — PSRAM —
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MEMMAP=y
+
+# — WiFi —
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
+CONFIG_LWIP_MAX_ACTIVE_TCP=16
+CONFIG_LWIP_MAX_LISTENING_TCP=8
+
+# — USB Host Library —
+# 注意 Kconfig 符号是 USB_HOST_*（无 ESP_ 前缀，旧写法 ESP_USB_HOST_* 是死符号）。
+# HUB 驱动所有板子默认带上：S3 板子无 5V 输出，接 USB 目标设备普遍经过带供电 HUB
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+
+# — esp_netif —
+CONFIG_ESP_NETIF_TCPIP_LWIP=y
+CONFIG_LWIP_DHCP=y
+CONFIG_LWIP_DHCP_SERVER=y
+
+# — LVGL —
+CONFIG_LV_USE=n
+
+# — 日志 —
+CONFIG_LOG_DEFAULT_LEVEL=3
+CONFIG_LOG_MAXIMUM_LEVEL=4
+
+# — mDNS —（raw-tcp + rfc2217 两个服务实例统一类型 _airserial_tcp._tcp）
+CONFIG_MDNS_MAX_SERVICES=3
+
+# — WDT —
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# — Sleep GPIO: 关掉！ESP-IDF v6.0.3 默认开启会在 app_main 之前隔离所有 GPIO，
+#   导致 I2C (G47/G48) 和 LCD SPI 全部无法工作！—
+CONFIG_ESP_SLEEP_GPIO_ENABLE=n

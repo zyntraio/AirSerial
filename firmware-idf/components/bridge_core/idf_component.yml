@@ -1,0 +1,6 @@
+## bridge_core 依赖
+## IDF v6 起 mdns 移出内置组件，改走 Component Registry（all targets）
+dependencies:
+  idf:
+    version: ">=6.0"
+  espressif/mdns: "1.8.2"

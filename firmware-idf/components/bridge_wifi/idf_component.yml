@@ -1,0 +1,6 @@
+## bridge_wifi 依赖
+## v0.4.0: S3 内置 WiFi（s3_builtin 后端），标准 esp_wifi API
+## 未来扩展: C5/C6 后端可加回 esp_hosted，但默认不用
+dependencies:
+  idf:
+    version: ">=6.0"

@@ -1,0 +1,39 @@
+menuconfig BOARD
+    bool "Board configuration"
+    default y
+    help
+        AirSerial 板级配置选择。
+        选板后 board 组件会自动编译对应的 board_xxx.c 源文件。
+
+if BOARD
+
+choice BOARD_TYPE_CHOICE
+    prompt "Target board"
+    default BOARD_TYPE_STICKS3
+    help
+        用 idf.py set-board <suffix> 可以快速切换:
+          sticks3 → sdkconfig.defaults.sticks3
+          n16r8   → sdkconfig.defaults.n16r8
+
+    config BOARD_TYPE_STICKS3
+        bool "M5Stack StickS3"
+        help
+            单 Type-C (USB-SERIAL-JTAG + OTG 共享 PHY), SHARED_PHY topo
+            8MB Flash, 8MB PSRAM (Quad), USB-SERIAL-JTAG console
+
+    config BOARD_TYPE_N16R8
+        bool "N16R8 公模板子"
+        help
+            双 Type-C, CH343 GPIO43/44 + 直通 OTG, INDEPENDENT topo
+            16MB Flash, 8MB PSRAM (Octal), UART0 GPIO43/44 console
+
+    config BOARD_TYPE_CARD_PUTER_ADV
+        bool "M5Stack Cardputer-Adv"
+        help
+            单 Type-C SHARED_PHY (USB-SERIAL-JTAG + OTG 共享 PHY)
+            Stamp-S3A 核心 (ESP32-S3FN8), 8MB Flash, 无外部 PSRAM
+            ST7789V2 1.14" 屏幕 + TCA8418 56 键键盘
+            USB-SERIAL-JTAG GPIO19/20 console
+endchoice
+
+endif

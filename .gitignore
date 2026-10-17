@@ -1,0 +1,49 @@
+# ===== ESP-IDF 构建产物 =====
+firmware-idf/build/
+firmware-idf/build-*/
+firmware-idf/.cache/
+firmware-idf/managed_components/
+firmware-idf/sdkconfig
+firmware-idf/sdkconfig.old
+firmware-idf/sdkconfig-n16r8
+firmware-idf/log/
+
+# firmware-idf 根目录的调试脚本与日志（正式源码仅 main/ 与 components/）
+firmware-idf/*.py
+firmware-idf/*.log
+firmware-idf/*.out
+firmware-idf/*.txt
+
+# ===== 发布产物（本地生成，走 GitHub Release 附件，不进 git）=====
+release/
+
+# ===== 历史版本 / 备份 / 临时实验 =====
+archive/
+backup/
+backup_v0.3.1_n16r8/
+Temp/
+_ref/
+reference/
+sticks3_host_test/
+ststicks3_test/
+ststicks3_test2/
+tools/
+
+# ===== 工作区工具与个人配置 =====
+.trae/
+.vscode/
+skills/
+
+# ===== 根目录旧 Arduino 版与开发期杂物 =====
+*.ino
+*.log
+/bridge.cpp
+/bridge.h
+/config.h
+/temp.html
+/PROJECT_MEMORY.md
+/ROADMAP.md
+/*.py
+/bootlog*.txt
+/n16r8_*.txt
+/lcd_boot.log

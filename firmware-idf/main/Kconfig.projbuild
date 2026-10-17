@@ -1,0 +1,31 @@
+menu "AirSerial peripheral options"
+
+    config AIRSERIAL_HAVE_DISPLAY
+        bool "Display panel"
+        default y
+        help
+            板载显示屏。关闭后整个 ui 组件与 LVGL 不参与编译，
+            设备以 headless 模式运行，仅靠 USB Host + WiFi 提供桥接。
+
+    config AIRSERIAL_HAVE_TOUCH
+        bool "Touchscreen"
+        depends on AIRSERIAL_HAVE_DISPLAY
+        default y
+        help
+            触摸屏（含屏上终端所需的触摸输入）。无触摸时显示仍可用于状态展示。
+
+    config AIRSERIAL_HAVE_KEYBOARD
+        bool "External I2C keyboard"
+        default y
+        help
+            外接 I2C 键盘探测（Tab5 专属键盘 / CardKB）。纯锦上添花，
+            关闭后不影响任何核心功能。
+
+    config AIRSERIAL_HAVE_SDCARD
+        bool "SD card"
+        default y
+        help
+            SD 卡支持。关闭后 bridge.cfg 配置文件来源不可用，
+            设备改用 NVS 保存的凭证与编译默认值。
+
+endmenu

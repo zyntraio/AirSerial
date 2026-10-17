@@ -1,0 +1,9 @@
+## AirSerial main component dependencies
+## v0.4.x: S3 内置 WiFi（s3_builtin 后端），裸 esp_lcd ui_cga（无 LVGL）
+dependencies:
+  idf:
+    version: '>=6.0'
+  espressif/usb_host_cdc_acm: ^2.4.1
+  espressif/usb_host_ch34x_vcp: ^2.2.1
+  espressif/usb_host_cp210x_vcp: ^2.2.0
+  espressif/usb_host_ftdi_vcp: "*"

@@ -1,0 +1,30 @@
+# AirSerial — N16R8 公模板子 专属覆盖
+# ESP32-S3 + 16MB boya Flash + 8MB Octal PSRAM (暂时关)
+# 双 USB 口：Type-C #1 = CH343→GPIO43/44 (独立 console)，Type-C #2 = OTG 直通
+# → INDEPENDENT topo：Host 模式 console 活！
+
+# — 芯片 & Flash —
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# — PSRAM —
+# 8MB Octal，与 StickS3 定稿对齐：CAPS_ALLOC + 40M。
+# bridge_serial 的 TX ring(32KB)/订阅者环(48KB) 显式从 PSRAM 静态分配，
+# 关掉 PSRAM 会回退内部 RAM 动态分配（无 PSRAM 板适配，N16R8 有 R8 不走那条路）
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_40M=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+
+# — UART（兜底路线 G4/G5 或真实目标 UART 场景同样需要 IRAM ISR 零丢失）—
+CONFIG_UART_ISR_IN_IRAM=y
+
+# — Console: UART0 默认 GPIO43/44 → 板上 CH343 硬连 Type-C #1 —
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# — Board type —
+CONFIG_BOARD_TYPE_N16R8=y
