@@ -8,6 +8,7 @@
 #define BRIDGE_UART_H
 
 #include "esp_err.h"
+#include "sdkconfig.h"
 #include "bridge_serial.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -25,9 +26,17 @@ typedef struct {
     int      gpio_rx;      /* -1 = use default */
 } bridge_uart_params_t;
 
-/* —— 默认参数（S3 StickS3）—— */
+/* —— 默认参数 ——
+ * UART 引脚按板分叉（丝印口即官方路线）：
+ *   PowerHub: PORT.C（蓝 Grove，丝印 UART）G1=TX / G2=RX
+ *   StickS3 / N16R8: G4=TX / G5=RX（HAT 排针 / 板边排针） */
+#if defined(CONFIG_BOARD_TYPE_POWERHUB)
+#define BRIDGE_UART_DEFAULT_TX_PIN   1
+#define BRIDGE_UART_DEFAULT_RX_PIN   2
+#else
 #define BRIDGE_UART_DEFAULT_TX_PIN   4
 #define BRIDGE_UART_DEFAULT_RX_PIN   5
+#endif
 #define BRIDGE_UART_DEFAULT_BAUD     921600
 
 /* Init UART driver + RX task. 调用时 transport 会自动替换 bridge_serial 里的当前 transport */

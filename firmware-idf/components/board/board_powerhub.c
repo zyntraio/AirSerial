@@ -65,17 +65,9 @@ static board_info_t s_info = {
 
 const board_info_t *board_get_info(void) { return &s_info; }
 
-/* — DTR/RTS 直控 —
- * PowerHub 无预留接目标板 RST/BOOT 的 GPIO（EXT 16P 的 G4-G7/G41/G42
- * 属远期扩展）。正面口 USB Host 路线下 esptool 复位由目标板上
- * USB-UART 模块自身 DTR/RTS 完成。 */
-esp_err_t board_serial_ctrl_init(void) { return ESP_ERR_NOT_SUPPORTED; }
-esp_err_t board_serial_ctrl_set(bool dtr_active, bool rts_active)
-{
-    (void)dtr_active; (void)rts_active;
-    return ESP_ERR_NOT_SUPPORTED;
-}
-bool board_serial_ctrl_is_supported(void) { return false; }
+/* — DTR/RTS 直控：完整实现见本文件后部（EXT 16P 排针 G4/G5） —
+ * 正面口 USB Host 路线下 esptool 复位由目标板上 USB-UART 模块自身
+ * DTR/RTS 完成；UART 兜底路线（PORT.C G1/G2）由本实现接管。 */
 
 /* — USB 拓扑状态 — */
 static board_usb_topo_t s_detected_topo = USB_TOPO_UNKNOWN;
@@ -427,6 +419,56 @@ static void vmusb_monitor_task(void *arg)
     }
 }
 
+/* ================================================================
+ *  DTR/RTS 带外控制（UART 兜底路线的 esptool 自动复位）
+ *
+ *  UART PORT（PORT.C 蓝 Grove）只有 G1/G2/5V/GND 四线，没有流控脚。
+ *  DTR/RTS 走 EXT 16P 排针：G4 → 目标 IO0/BOOT，G5 → 目标 EN/RST。
+ *  与 sticks3 同款开漏 + idle 释放（防探测期误夹目标板）。
+ * ================================================================ */
+#define BOARD_DTR_GPIO   4    /* 客户端 DTR → 目标板 IO0/BOOT (低=下载模式) */
+#define BOARD_RTS_GPIO   5    /* 客户端 RTS → 目标板 EN/RST (低脉冲复位) */
+
+static bool s_serial_ctrl_inited;
+
+esp_err_t board_serial_ctrl_init(void)
+{
+    if (s_serial_ctrl_inited) return ESP_OK;
+
+    gpio_config_t cfg = {
+        .mode = GPIO_MODE_OUTPUT_OD,
+        .pin_bit_mask = (1ULL << BOARD_DTR_GPIO) | (1ULL << BOARD_RTS_GPIO),
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&cfg));
+
+    /* idle 状态: 释放(高阻), 电平由目标板板上拉定义 */
+    gpio_set_level(BOARD_DTR_GPIO, 1);
+    gpio_set_level(BOARD_RTS_GPIO, 1);
+
+    s_serial_ctrl_inited = true;
+    ESP_LOGI(TAG, "DTR/RTS init: DTR=G%d RTS=G%d (EXT 16P pin15/16, idle=release/OD)",
+             BOARD_DTR_GPIO, BOARD_RTS_GPIO);
+    return ESP_OK;
+}
+
+esp_err_t board_serial_ctrl_set(bool dtr_active, bool rts_active)
+{
+    if (!s_serial_ctrl_inited) {
+        ESP_LOGE(TAG, "DTR/RTS not inited");
+        return ESP_ERR_INVALID_STATE;
+    }
+    int dtr_level = dtr_active ? 0 : 1;
+    int rts_level = rts_active ? 0 : 1;
+    gpio_set_level(BOARD_DTR_GPIO, dtr_level);
+    gpio_set_level(BOARD_RTS_GPIO, rts_level);
+    return ESP_OK;
+}
+
+bool board_serial_ctrl_is_supported(void) { return true; }
+
 esp_err_t board_init(void)
 {
     ESP_LOGI(TAG, "board_init (M5Stack PowerHub)");
@@ -446,7 +488,8 @@ esp_err_t board_init(void)
         ph_write_reg(PH_REG_PC_USB, 0);
         ph_write_reg(PH_REG_USB_MODE, 0);
         ph_write_reg(PH_REG_PC_LED, 1);   /* WS2812 供电开——状态灯是 headless 唯一物理出口 */
-        ESP_LOGI(TAG, "device-mode cleanup: PC_USB=0, USB_MODE=0 (data → bottom C), PC_LED=1");
+        ph_write_reg(PH_REG_PC_UART, 1);  /* UART PORT 5V 常开——PORT 插线即用（同 PORT.A 传感器语义） */
+        ESP_LOGI(TAG, "device-mode cleanup: PC_USB=0, USB_MODE=0 (data → bottom C), PC_LED=1, PC_UART=1");
     }
 
     /* 电池/充电/外部供电状态 */
@@ -460,6 +503,9 @@ esp_err_t board_init(void)
 
     /* VM_USB 监测 + 倒灌保护（VAMeter 已在 power_status_log 里开启） */
     xTaskCreate(vmusb_monitor_task, "vmusb_mon", 3072, NULL, 2, NULL);
+
+    /* DTR/RTS（EXT 排针 G4/G5）：UART 兜底路线的 esptool 自动复位 */
+    board_serial_ctrl_init();
 
     ESP_LOGI(TAG, "board_init done");
     return ESP_OK;
