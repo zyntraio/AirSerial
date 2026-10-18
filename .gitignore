@@ -13,6 +13,8 @@ firmware-idf/*.py
 firmware-idf/*.log
 firmware-idf/*.out
 firmware-idf/*.txt
+# 例外：CMakeLists.txt 是项目构建入口，*.txt 规则不得误伤
+!firmware-idf/CMakeLists.txt
 
 # ===== 发布产物（本地生成，走 GitHub Release 附件，不进 git）=====
 release/
