@@ -96,10 +96,8 @@ __attribute__((weak)) bool board_powerhub_pwr_get(uint16_t *bat_mv, int *pct,
 }
 
 /* — USB 路由模式 默认 0（弱符号）— */
-__attribute__((weak)) uint8_t board_powerhub_usb_mode_get(void)
-{
-    return 0;
-}
+__attribute__((weak)) uint8_t board_powerhub_usb_mode_get(void) { return 0; }
+__attribute__((weak)) bool    board_powerhub_uart_port_on(void) { return false; }
 
 /* — AI 能力判断 — */
 bool board_can_ai(void)

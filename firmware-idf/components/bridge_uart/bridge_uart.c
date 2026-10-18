@@ -53,6 +53,7 @@ static volatile size_t s_dbg_buf_full;
 static volatile size_t s_dbg_frame_err;
 static volatile size_t s_dbg_parity_err;
 static volatile size_t s_dbg_break;
+static volatile TickType_t s_last_rx_ticks;   /* 最近 RX 字节时间戳（UART"有设备"判定） */
 
 /* —— bridge_serial transport send —— */
 static esp_err_t uart_send_fn(const uint8_t *d, size_t l, void *a)
@@ -122,6 +123,7 @@ static void uart_rx_task(void *arg)
         int len = uart_read_bytes(BRIDGE_UART_NUM, rx_buf, sizeof(rx_buf), 0);
         while (len > 0) {
             s_dbg_rx_bytes += (size_t)len;
+            s_last_rx_ticks = xTaskGetTickCount();  /* UART"有设备"判定依据（LED 等用） */
             /* 主 RX 环无读者时会返回 false，但 fanout 订阅者已收到本批，忽略返回值；
              * 绝不在此打日志——921600 突发期每批一条同步日志会卡住本任务撑爆驱动 ring */
             (void)bridge_serial_on_rx(rx_buf, (size_t)len);
@@ -139,6 +141,15 @@ void bridge_uart_rx_debug(size_t *bytes, size_t *fifo_ovf, size_t *buf_full,
     if (frame_err) *frame_err = s_dbg_frame_err;
     if (parity_err)*parity_err= s_dbg_parity_err;
     if (brk)       *brk       = s_dbg_break;
+}
+
+/* UART 无枚举概念，"有设备" = 最近 window_ms 内有 RX 字节。
+ * 目标板活着就会吐日志，有数据即视为有设备。 */
+bool bridge_uart_rx_active(uint32_t window_ms)
+{
+    TickType_t last = s_last_rx_ticks;
+    if (last == 0) return false;
+    return (xTaskGetTickCount() - last) < pdMS_TO_TICKS(window_ms);
 }
 
 /* —— UART 初始化 ——

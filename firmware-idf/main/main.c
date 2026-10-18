@@ -445,6 +445,13 @@ static void led_sem_task(void *arg)
             }
         }
 
+        /* #2 UART PORT（PORT.C）：同 USB 灯逻辑——供电=蓝（待命），
+         * 有 RX 数据活动=绿（UART 无枚举概念，2s 活动窗口判定"有设备"），断电=灭 */
+        if (board_powerhub_uart_port_on()) {
+            now[2] = bridge_uart_rx_active(2000) ? (led_t){0, 220, 0, 12}
+                                                 : (led_t){0, 0, 180, 12};
+        }
+
         for (int i = 0; i < 8; i++) {
             if (memcmp(&now[i], &last[i], sizeof(led_t)) != 0) {
                 board_led_raw(i, now[i].r, now[i].g, now[i].b, now[i].bri);

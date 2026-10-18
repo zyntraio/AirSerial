@@ -37,7 +37,10 @@ typedef struct {
 #define BRIDGE_UART_DEFAULT_TX_PIN   4
 #define BRIDGE_UART_DEFAULT_RX_PIN   5
 #endif
-#define BRIDGE_UART_DEFAULT_BAUD     921600
+/* 默认 115200：所有 ESP ROM boot 日志的固定波特率，裸目标板插上即可读日志。
+ * 高速烧录不依赖默认值——RFC2217 客户端连接时 SET_BAUDRATE 热改（esptool
+ * 握手段本就 115200，之后自动提速）。 */
+#define BRIDGE_UART_DEFAULT_BAUD     115200
 
 /* Init UART driver + RX task. 调用时 transport 会自动替换 bridge_serial 里的当前 transport */
 esp_err_t bridge_uart_init(void);
@@ -56,6 +59,9 @@ uint32_t bridge_uart_get_baud(void);
 /* RX 侧诊断：UART 实收字节数 / FIFO 溢出 / 驱动缓冲满 / 帧错 / 校验错 / BREAK（可传 NULL） */
 void bridge_uart_rx_debug(size_t *bytes, size_t *fifo_ovf, size_t *buf_full,
                           size_t *frame_err, size_t *parity_err, size_t *brk);
+
+/* UART 无枚举概念，"有设备" = 最近 window_ms 内有 RX 字节（LED 指示等用） */
+bool bridge_uart_rx_active(uint32_t window_ms);
 
 bool bridge_uart_set_baud(uint32_t baud);
 

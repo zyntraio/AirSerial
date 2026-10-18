@@ -116,6 +116,9 @@ bool board_powerhub_pwr_get(uint16_t *bat_mv, int *pct, uint8_t *chg, uint8_t *e
 /* — 当前 USB 路由模式（弱符号）— 0=底部C/1=正面A/2=正面C；其他板恒 0 */
 uint8_t board_powerhub_usb_mode_get(void);
 
+/* UART PORT（PORT.C）5V 供电状态（弱符号默认 false） */
+bool board_powerhub_uart_port_on(void);
+
 /* — 给其他组件用的便利查询 — */
 bool board_has_psram(void);
 bool board_has_display(void);

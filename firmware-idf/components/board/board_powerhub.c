@@ -469,6 +469,11 @@ esp_err_t board_serial_ctrl_set(bool dtr_active, bool rts_active)
 
 bool board_serial_ctrl_is_supported(void) { return true; }
 
+/* — UART PORT（PORT.C）5V 供电状态：board_init 收口时默认开 — */
+static bool s_pc_uart_on;
+
+bool board_powerhub_uart_port_on(void) { return s_pc_uart_on; }
+
 esp_err_t board_init(void)
 {
     ESP_LOGI(TAG, "board_init (M5Stack PowerHub)");
@@ -489,6 +494,7 @@ esp_err_t board_init(void)
         ph_write_reg(PH_REG_USB_MODE, 0);
         ph_write_reg(PH_REG_PC_LED, 1);   /* WS2812 供电开——状态灯是 headless 唯一物理出口 */
         ph_write_reg(PH_REG_PC_UART, 1);  /* UART PORT 5V 常开——PORT 插线即用（同 PORT.A 传感器语义） */
+        s_pc_uart_on = true;
         ESP_LOGI(TAG, "device-mode cleanup: PC_USB=0, USB_MODE=0 (data → bottom C), PC_LED=1, PC_UART=1");
     }
 
