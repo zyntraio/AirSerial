@@ -29,8 +29,9 @@ typedef struct {
 /* —— 默认参数 ——
  * UART 引脚按板分叉（丝印口即官方路线）：
  *   PowerHub: PORT.C（蓝 Grove，丝印 UART）G1=TX / G2=RX
+ *   Cardputer ADV: Grove（HY2.0-4P PORT.CUSTOM）G1=TX / G2=RX
  *   StickS3 / N16R8: G4=TX / G5=RX（HAT 排针 / 板边排针） */
-#if defined(CONFIG_BOARD_TYPE_POWERHUB)
+#if defined(CONFIG_BOARD_TYPE_POWERHUB) || defined(CONFIG_BOARD_TYPE_CARD_PUTER_ADV)
 #define BRIDGE_UART_DEFAULT_TX_PIN   1
 #define BRIDGE_UART_DEFAULT_RX_PIN   2
 #else
