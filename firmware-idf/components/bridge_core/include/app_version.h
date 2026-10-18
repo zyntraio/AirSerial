@@ -6,4 +6,4 @@
  */
 #pragma once
 
-#define AIRSERIAL_VERSION   "v0.3.1-alpha"
+#define AIRSERIAL_VERSION   "v0.3.3-alpha"

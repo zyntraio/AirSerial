@@ -1,0 +1,47 @@
+# AirSerial — M5Stack PowerHub 专属覆盖
+# ESP32-S3-N16R8 (16MB Flash, 8MB Octal PSRAM, STM32G031 协处理器)
+# 底部 Type-C: USB-SERIAL-JTAG console + OTG 共享 PHY → SHARED_PHY topo
+# 正面 Type-A/C: 经 STM32 USB Switch 切换 → Host 模式目标板插这里
+# 无屏无键盘 → Tier0 headless
+
+# — 芯片 & Flash —
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# — PSRAM —
+# 8MB Octal，与 N16R8/StickS3 定稿对齐：CAPS_ALLOC + 40M。
+# bridge_serial 的 TX ring(32KB)/订阅者环(48KB) 显式从 PSRAM 静态分配。
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_40M=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+
+# — Web —
+# 网页终端 /ws WebSocket 支持（httpd WS API 被 CONFIG_HTTPD_WS_SUPPORT 宏守卫）
+CONFIG_HTTPD_WS_SUPPORT=y
+# WS 握手后回调（ws_post_handshake_cb：IDF6 握手由内核完成，不再进 handler）
+CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y
+# lwIP 全局 socket 池：httpd(1+10) + bridge_tcp + rfc2217 + mDNS ≈ 14，
+# 双端（桌面+手机）并存 + TIME_WAIT 堆积时默认 10/16 都会打满
+CONFIG_LWIP_MAX_SOCKETS=20
+CONFIG_LWIP_MAX_ACTIVE_TCP=24
+
+# — UART —
+# 921600 回环零丢字节：ISR 放 IRAM，避免 flash/cache 操作延迟 RX 中断
+CONFIG_UART_ISR_IN_IRAM=y
+
+# — Console: USB-SERIAL-JTAG（底部 Type-C，板上只有这一个串口通路）—
+CONFIG_ESP_CONSOLE_UART_DEFAULT=n
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# — Board type —
+CONFIG_BOARD_TYPE_POWERHUB=y
+
+# — 外设裁剪：无屏无键盘无 SD 卡（Tier0 headless） —
+CONFIG_AIRSERIAL_HAVE_DISPLAY=n
+CONFIG_AIRSERIAL_HAVE_KEYBOARD=n
+CONFIG_AIRSERIAL_HAVE_SDCARD=n

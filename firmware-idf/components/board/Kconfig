@@ -34,6 +34,15 @@ choice BOARD_TYPE_CHOICE
             Stamp-S3A 核心 (ESP32-S3FN8), 8MB Flash, 无外部 PSRAM
             ST7789V2 1.14" 屏幕 + TCA8418 56 键键盘
             USB-SERIAL-JTAG GPIO19/20 console
+
+    config BOARD_TYPE_POWERHUB
+        bool "M5Stack PowerHub"
+        help
+            ESP32-S3-N16R8 (16MB Flash, 8MB Octal PSRAM)
+            STM32G031G8U6 协处理器 (I2C 0x50) 管理电源/LED/INA226
+            底部 Type-C SHARED_PHY, 正面 Type-A/C 经 USB Switch 切换
+            无屏无键盘 → Tier0 headless
+            USB-SERIAL-JTAG console
 endchoice
 
 endif

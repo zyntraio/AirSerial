@@ -38,6 +38,13 @@ void      bridge_rfc2217_stop(void);
 void      bridge_rfc2217_set_ctrl_callback(rfc2217_ctrl_cb_t cb, void *arg);
 void      bridge_rfc2217_set_client_callback(rfc2217_client_cb_t cb, void *arg);
 
+/* —— AirSerial CLI（v0.3.3 起 RFC2217 与 Web WS 终端共用）——
+ * 回复通道由调用方注入：RFC2217 传 socket 发送，WS 终端传 WebSocket 帧发送。
+ * line 为以 \0 结尾的一行文本；前缀 "!airsn " 不符时返回 false，
+ * 调用方应把原行穿透下发到串口桥（套娃场景二台桥的扩展命令必须能到达）。 */
+typedef void (*bridge_cli_reply_t)(const char *line, void *arg);
+bool bridge_cli_process(char *line, bridge_cli_reply_t reply, void *arg, const char *channel);
+
 /* 供 bridge_tcp 查询：3334 是否有活跃客户端（弱符号，无 rfc2217 时返回 false） */
 bool bridge_rfc2217_has_client(void);
 

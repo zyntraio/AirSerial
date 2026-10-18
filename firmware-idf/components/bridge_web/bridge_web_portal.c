@@ -14,6 +14,7 @@
 #include "bridge_web_dns.h"
 #include "bridge_wifi.h"
 #include "bridge_serial.h"
+#include "bridge_rfc2217.h"
 #include "app_version.h"
 
 #include "esp_log.h"
@@ -49,6 +50,7 @@ static char           s_ap_ip[16] = "192.168.4.1";
 
 /* — 前向声明 — */
 static esp_err_t ws_term_handler(httpd_req_t *req);
+static esp_err_t ws_post_handshake_cb(httpd_req_t *req);
 static void ws_forward_task(void *arg);
 
 /* 探针路径表（OS 联网检测 URL），命中即 302 回首页 */
@@ -154,7 +156,7 @@ static const char s_html[] =
 "</style></head><body>"
 "<div class='app'>"
 "<aside class='sidebar' id='sidebar'>"
-"<div class='brand'><h1>AirSerial</h1><div class='ver' id='ver'>v0.3.2</div></div>"
+"<div class='brand'><h1>AirSerial</h1><div class='ver' id='ver'>--</div></div>"
 "<nav class='tabs'>"
 "<div class='tab active' data-tab='wifi'><span class='icon'>📶</span>WiFi</div>"
 "<div class='tab' data-tab='serial'><span class='icon'>🔌</span>Serial</div>"
@@ -302,7 +304,7 @@ static const char s_html[] =
 "async function updateUsbStatus(){const u=await apiGet(\"/api/usb/host_status\");if(!u)return;const dot=document.getElementById(\"uhDot\");if(dot){const mode=document.getElementById(\"uhMode\");const en=document.getElementById(\"uhEnable\");const dis=document.getElementById(\"uhDisable\");if(u.host_enabled){dot.style.background=\"var(--danger)\";mode.textContent=\"Host mode (risky — monitor will disconnect)\";en.style.display=\"none\";dis.style.display=\"inline-block\"}else{dot.style.background=\"var(--ok)\";mode.textContent=\"Device mode (safe — monitor available)\";en.style.display=\"inline-block\";dis.style.display=\"none\"}}const d=await apiGet(\"/api/usb/debug\");const b=document.getElementById(\"cloneBanner\");if(d&&d.ch340_clone){b.textContent=L(\"clone_warn\").replace(\"%V\",d.ch340_ver||\"?\");b.style.display=\"block\"}else{b.style.display=\"none\"}}"
 "async function enableUsbHost(){if(!confirm(\"Enable USB Host?\\n\\nThis will reboot the device and the monitor will disconnect.\\nThe serial console is lost until Host mode is disabled.\"))return;const r=await apiPost(\"/api/usb/host_on\",{});if(r&&r.ok){document.getElementById(\"uhEnable\").disabled=true;document.getElementById(\"uhEnable\").textContent=\"Rebooting...\"}else alert(\"Failed: \"+(r&&r.error?r.error:\"unknown\"))}"
 "async function disableUsbHost(){const r=await apiPost(\"/api/usb/host_off\",{});if(r&&r.ok){document.getElementById(\"uhDisable\").disabled=true;document.getElementById(\"uhDisable\").textContent=\"Rebooting...\"}else alert(\"Failed: \"+(r&&r.error?r.error:\"unknown\"))}"
-"async function updateStatus(){const s=await apiGet(\"/api/status\");if(!s)return;features=new Set(s.features||[]);tabs.forEach(t=>{const tab=t.dataset.tab;const map={wifi:\"wifi_connect\",serial:\"serial_config\",system:\"system_restart\",tunnel:\"tunnel\",ai:\"ai\"};t.classList.toggle(\"hidden\",!features.has(map[tab]||tab))});const dot=document.getElementById(\"wifiDot\");dot.classList.toggle(\"on\",s.sta_connected);dot.classList.toggle(\"off\",!s.sta_connected);document.getElementById(\"wifiLabel\").textContent=s.sta_connected?(s.sta_ssid||L(\"connected\")):(s.ap_active?(L(\"hotspot\")+s.ap_ssid):L(\"offline\"));document.getElementById(\"uptime\").textContent=fmtUptime(s.uptime);document.getElementById(\"ver\").textContent=\"v\"+s.version;document.getElementById(\"ap-info\").textContent=L(\"ap\")+(s.ap_active?(s.ap_ssid+\" (\"+s.ap_ip+\")\"):L(\"inactive\"))}"
+"async function updateStatus(){const s=await apiGet(\"/api/status\");if(!s)return;features=new Set(s.features||[]);tabs.forEach(t=>{const tab=t.dataset.tab;const map={wifi:\"wifi_connect\",serial:\"serial_config\",system:\"system_restart\",tunnel:\"tunnel\",ai:\"ai\"};t.classList.toggle(\"hidden\",!features.has(map[tab]||tab))});const dot=document.getElementById(\"wifiDot\");dot.classList.toggle(\"on\",s.sta_connected);dot.classList.toggle(\"off\",!s.sta_connected);document.getElementById(\"wifiLabel\").textContent=s.sta_connected?(s.sta_ssid||L(\"connected\")):(s.ap_active?(L(\"hotspot\")+s.ap_ssid):L(\"offline\"));document.getElementById(\"uptime\").textContent=fmtUptime(s.uptime);document.getElementById(\"ver\").textContent=s.version;document.getElementById(\"ap-info\").textContent=L(\"ap\")+(s.ap_active?(s.ap_ssid+\" (\"+s.ap_ip+\")\"):L(\"inactive\"))}"
 "tabs.forEach(t=>{t.onclick=()=>{showSection(t.dataset.tab);if(t.dataset.tab===\"serial\")updateUsbStatus()}});"
 "document.getElementById(\"scanBtn\").onclick=doScan;"
 "document.getElementById(\"manualConnectBtn\").onclick=()=>{const ssid=document.getElementById(\"manualSsid\").value.trim();const pw=document.getElementById(\"manualPw\").value.trim();if(!ssid)return;doConnect(ssid,pw)};"
@@ -321,8 +323,7 @@ static const char s_html[] =
 "const termBox=document.getElementById('termBox');"
 "const termInput=document.getElementById('termInput');"
 "const wsStatus=document.getElementById('wsStatus');"
-"function wsConnect(){"
-"const proto=location.protocol==='https:'?'wss:':'ws:';"
+"function wsConnect(){if(ws){ws.close();ws=null}const proto=location.protocol==='https:'?'wss:':'ws:';"
 "ws=new WebSocket(proto+'//'+location.host+'/ws');"
 "ws.binaryType='arraybuffer';"
 "wsStatus.textContent='connecting...';"
@@ -701,8 +702,10 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/api/wifi/saved",     .method = HTTP_GET,    .handler = api_wifi_saved_get },
     { .uri = "/api/wifi/saved",     .method = HTTP_DELETE, .handler = api_wifi_saved_delete },
     { .uri = "/api/wifi/connect",   .method = HTTP_POST,   .handler = api_wifi_connect_post },
-    /* WebSocket handler disabled — ESP-IDF v6.0.3 API compat pending */
-    /* { .uri = "/ws",                 .method = HTTP_GET,    .handler = ws_term_handler, .is_websocket = true }, */
+    /* WebSocket 串口终端（需 CONFIG_HTTPD_WS_SUPPORT=y）
+     * IDF6 握手不进 handler → 连接建立走 ws_post_handshake_cb */
+    { .uri = "/ws", .method = HTTP_GET, .handler = ws_term_handler,
+      .is_websocket = true, .ws_post_handshake_cb = ws_post_handshake_cb },
 };
 
 esp_err_t bridge_web_portal_start(const char *ap_ssid, const char *ap_ip)
@@ -718,7 +721,7 @@ esp_err_t bridge_web_portal_start(const char *ap_ssid, const char *ap_ip)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port = BRIDGE_WEB_HTTP_PORT;
     cfg.ctrl_port = 32768 + BRIDGE_WEB_HTTP_PORT;
-    cfg.max_open_sockets = 2;       /* 内部 RAM 紧张，少开 */
+    cfg.max_open_sockets = 10;      /* 桌面+手机并存（各 2-3 keep-alive + 1 WS），6 会把手机 WS 挤死 */
     cfg.stack_size = 8192;          /* v0.5: 加大栈 */
     cfg.max_uri_handlers = 32;
     cfg.task_priority = 6;
@@ -796,9 +799,7 @@ esp_err_t bridge_web_add_uri_handler(const httpd_uri_t *uri)
  *  浏览器 ↔ WebSocket ↔ bridge_serial ↔ bridge_uart ↔ 目标板
  * ================================================================ */
 
-/* WebSocket 相关代码临时禁用 —— ESP-IDF v6.0.3 httpd WS API 兼容性待修 */
-#if 0
-/* 转发 task：从 bridge_serial subscriber 读 UART RX 数据，通过 WebSocket 发给客户端 */
+/* WebSocket 转发 task：从 bridge_serial subscriber 读 UART RX 数据，通过 WebSocket 发给客户端 */
 static void ws_forward_task(void *arg)
 {
     ESP_LOGI(TAG, "[WS] forward task started");
@@ -852,20 +853,60 @@ static void ws_ensure_sub_and_task(void)
     }
 }
 
-/* WebSocket URI handler */
+/* IDF6：WS 握手由 httpd 内核完成（不进 handler）。
+ * 连接建立后经 post-handshake 回调通知：记 fd + 启动转发链路。
+ * 单客户端语义：新连接进来时踢掉旧 fd，防僵尸连接耗尽会话槽 */
+static esp_err_t ws_post_handshake_cb(httpd_req_t *req)
+{
+    int fd = httpd_req_to_sockfd(req);
+    int old = s_ws_client_fd;
+    if (old >= 0 && old != fd && s_httpd) {
+        ESP_LOGW(TAG, "[WS] replacing stale client fd=%d with fd=%d", old, fd);
+        httpd_sess_trigger_close(s_httpd, old);
+    }
+    ESP_LOGI(TAG, "[WS] client connected, fd=%d", fd);
+    s_ws_client_fd = fd;
+    s_ws_client_count = 1;
+    ws_ensure_sub_and_task();
+    return ESP_OK;
+}
+
+/* 服务端→客户端 TEXT 帧（同步直发）。httpd_ws_send_data 内部是
+ * queue_work + 无限等完成，而 work 只由 httpd 控制线程执行——
+ * 在 ws_term_handler（控制线程）里调用它等于自己等自己，永久死锁。
+ * CLI 回复就在 handler 上下文，必须用 httpd_socket_send 直接发。 */
+static esp_err_t ws_send_text_frame(int fd, const uint8_t *payload, size_t len)
+{
+    uint8_t hdr[4];
+    int hlen = 0;
+    hdr[hlen++] = 0x81;                    /* FIN + TEXT */
+    if (len < 126) {
+        hdr[hlen++] = (uint8_t)len;
+    } else {
+        hdr[hlen++] = 126;
+        hdr[hlen++] = (uint8_t)(len >> 8);
+        hdr[hlen++] = (uint8_t)len;
+    }
+    if (httpd_socket_send(s_httpd, fd, (const char *)hdr, hlen, 0) < 0) {
+        return ESP_FAIL;
+    }
+    return httpd_socket_send(s_httpd, fd, (const char *)payload, len, 0) < 0
+           ? ESP_FAIL : ESP_OK;
+}
+
+/* CLI 回复 → WS TEXT 帧（bridge_cli_process 通道注入，handler 上下文同步发） */
+static void ws_cli_reply(const char *line, void *arg)
+{
+    (void)arg;
+    int fd = s_ws_client_fd;
+    if (fd < 0 || !s_httpd) return;
+    esp_err_t r = ws_send_text_frame(fd, (const uint8_t *)line, strlen(line));
+    ESP_LOGI(TAG, "[WS] cli reply %zu bytes -> %s", strlen(line), esp_err_to_name(r));
+}
+
+/* 数据帧 handler：浏览器发来的串口输入（IDF6 帧到达时 method=0，靠帧类型判断）*/
 static esp_err_t ws_term_handler(httpd_req_t *req)
 {
-    /* 第一次连接（HTTP_GET 升级到 WebSocket）*/
-    if (req->method == HTTP_GET) {
-        int fd = httpd_req_to_sockfd(req);
-        ESP_LOGI(TAG, "[WS] client connected, fd=%d", fd);
-        s_ws_client_fd = fd;
-        s_ws_client_count = 1;
-        ws_ensure_sub_and_task();
-        return ESP_OK;  /* httpd 自动处理 WS 握手升级 */
-    }
-
-    /* WebSocket 数据帧 —— 浏览器发来的串口输入 */
     httpd_ws_frame_t ws_pkt;
     uint8_t *buf = NULL;
     memset(&ws_pkt, 0, sizeof(ws_pkt));
@@ -877,18 +918,9 @@ static esp_err_t ws_term_handler(httpd_req_t *req)
         return ret;
     }
 
-    /* 跳过 control frames (CLOSE/PING/PONG) */
-    if (ws_pkt.type == HTTPD_WS_TYPE_CLOSE) {
-        ESP_LOGI(TAG, "[WS] client CLOSE frame");
-        s_ws_client_fd = -1;
-        s_ws_client_count = 0;
+    /* 只处理数据帧；控制帧（PING/PONG/CLOSE）由 httpd 内核自动处理 */
+    if (ws_pkt.type != HTTPD_WS_TYPE_TEXT && ws_pkt.type != HTTPD_WS_TYPE_BINARY) {
         return ESP_OK;
-    }
-    if (ws_pkt.type == HTTPD_WS_TYPE_PING) {
-        httpd_ws_frame_t pong;
-        memset(&pong, 0, sizeof(pong));
-        pong.type = HTTPD_WS_TYPE_PONG;
-        return httpd_ws_send_frame(req, &pong);
     }
 
     if (ws_pkt.len > 0) {
@@ -901,6 +933,15 @@ static esp_err_t ws_term_handler(httpd_req_t *req)
             free(buf);
             return ret;
         }
+        /* 手动补 \0：recv_frame 不写终止符，CLI 的 strncmp/strlen 需要 C 字符串 */
+        buf[ws_pkt.len] = '\0';
+        /* 本地命令拦截：!airsn … 与 RFC2217 通道共用同一套分发；
+         * 前缀不符（false）则原样穿透给目标板 */
+        if (buf[0] == '!' &&
+            bridge_cli_process((char *)buf, ws_cli_reply, NULL, "Web terminal")) {
+            free(buf);
+            return ESP_OK;
+        }
         /* 浏览器输入 → bridge_serial TX 环 → UART → 目标板 */
         size_t written = bridge_serial_write(buf, ws_pkt.len, 100);
         ESP_LOGI(TAG, "[WS] → serial: %zu bytes (written %zu)", ws_pkt.len, written);
@@ -909,4 +950,3 @@ static esp_err_t ws_term_handler(httpd_req_t *req)
 
     return ESP_OK;
 }
-#endif /* 0 - WebSocket API compat pending */

@@ -54,6 +54,53 @@ bool board_has_display(void)   { return board_get_info()->has_lcd; }
 bool board_has_keyboard(void)  { return board_get_info()->has_kbd; }
 board_tier_t board_get_tier(void) { return board_get_info()->tier; }
 
+/* — USB Host 板级准备 默认空实现（弱符号）—
+ * PowerHub 在 board_powerhub.c 覆写：开 PC_USB + 切 USB Switch 到正面口 */
+__attribute__((weak)) esp_err_t board_usb_host_prepare(void)
+{
+    return ESP_OK;
+}
+
+/* — A/C 口自动回退 默认不支持（弱符号）— */
+__attribute__((weak)) bool board_usb_host_switch_alt(void)
+{
+    return false;
+}
+
+/* — 正面 USB 口电压/电流监测 默认不支持（弱符号）— */
+__attribute__((weak)) bool board_powerhub_vmusb_get(int16_t *ma, uint16_t *mv)
+{
+    (void)ma; (void)mv;
+    return false;
+}
+
+/* — 倒灌保护触发状态 默认否（弱符号）— */
+__attribute__((weak)) bool board_powerhub_backfeed_tripped(void)
+{
+    return false;
+}
+
+/* — WS2812 状态灯驱动原语 默认空（弱符号）— */
+__attribute__((weak)) void board_led_raw(uint8_t idx, uint8_t r, uint8_t g,
+                                         uint8_t b, uint8_t bri)
+{
+    (void)idx; (void)r; (void)g; (void)b; (void)bri;
+}
+
+/* — 电源状态查询 默认不支持（弱符号）— */
+__attribute__((weak)) bool board_powerhub_pwr_get(uint16_t *bat_mv, int *pct,
+                                                  uint8_t *chg, uint8_t *ext)
+{
+    (void)bat_mv; (void)pct; (void)chg; (void)ext;
+    return false;
+}
+
+/* — USB 路由模式 默认 0（弱符号）— */
+__attribute__((weak)) uint8_t board_powerhub_usb_mode_get(void)
+{
+    return 0;
+}
+
 /* — AI 能力判断 — */
 bool board_can_ai(void)
 {

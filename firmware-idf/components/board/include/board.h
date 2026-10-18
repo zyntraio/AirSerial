@@ -86,6 +86,36 @@ int   board_get_lcd_vres(void);
  */
 void board_detect_usb_topo(void);
 
+/* — USB Host 初始化前的板级准备（弱符号，板子可覆写）—
+ * 默认实现：什么都不做（StickS3/N16R8 直插就能用）。
+ * PowerHub 覆写：PC_USB=1 开正面口 5V + USB_MODE=1 把数据线切到正面 Type-A。
+ * 在 bridge_usb_host_init() 之前调用。 */
+esp_err_t board_usb_host_prepare(void);
+
+/* — A/C 口自动回退（弱符号，板子可覆写）—
+ * cdc_retry 连续失败时调用：PowerHub 覆写为 USB_MODE 1↔2 互切
+ * （正面 Type-A 无设备则试 Type-C）；其他板无 USB Switch，返回 false。 */
+bool board_usb_host_switch_alt(void);
+
+/* — 正面 USB 口电压/电流监测（弱符号）—
+ * PowerHub 覆写：读 VM_USB INA226（0x3C mV / 0x3E mA，负=流入=倒灌）。
+ * 其他板返回 false。供 /api/usb/debug 与倒灌检测使用。 */
+bool board_powerhub_vmusb_get(int16_t *ma, uint16_t *mv);
+
+/* — 倒灌保护是否已触发（弱符号）— PowerHub 覆写；其他板恒 false */
+bool board_powerhub_backfeed_tripped(void);
+
+/* — WS2812 状态灯驱动原语（弱符号）—
+ * PowerHub 覆写（8 颗经 STM32 寄存器 0x60 颜色/0x80 亮度）；
+ * 其他板空实现。语义渲染在 main，板层只管写硬件。 */
+void board_led_raw(uint8_t idx, uint8_t r, uint8_t g, uint8_t b, uint8_t bri);
+
+/* — 电源状态查询（弱符号）— PowerHub 覆写；其他板返回 false */
+bool board_powerhub_pwr_get(uint16_t *bat_mv, int *pct, uint8_t *chg, uint8_t *ext);
+
+/* — 当前 USB 路由模式（弱符号）— 0=底部C/1=正面A/2=正面C；其他板恒 0 */
+uint8_t board_powerhub_usb_mode_get(void);
+
 /* — 给其他组件用的便利查询 — */
 bool board_has_psram(void);
 bool board_has_display(void);

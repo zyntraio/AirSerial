@@ -83,9 +83,10 @@
 #define CTRL_RTS_ON       0x0b
 #define CTRL_RTS_OFF      0x0c
 
-/* —— AirSerial CLI (v0.3.1) ——
- * RFC2217 端口上以 "!airsn " 开头的文本命令行被固件拦截处理，
- * 不下发给目标板。命令以 \r\n 或 \n 结尾。 */
+/* —— AirSerial CLI (v0.3.3) ——
+ * "!airsn " 开头的文本命令行被固件拦截处理，不下发给目标板。
+ * RFC2217 与 Web WS 终端共用同一套命令分发（bridge_cli_process），
+ * 回复通道由调用方注入。命令以 \r\n 或 \n 结尾。 */
 #define CLI_PREFIX "!airsn "
 #define CLI_PREFIX_LEN 7  /* strlen("!airsn ") */
 #define CLI_VERSION "v1"
@@ -101,9 +102,36 @@ static uint32_t s_boot_magic;
 
 /* 前向声明：cli_reply 里要用 locked_send */
 static void locked_send(int fd, const uint8_t *buf, size_t n);
+static bool cli_handle_line(char *line);
 
-/* CLI 回复函数（持锁 send，带 \r\n 结尾） */
-static void cli_reply(int fd, const char *fmt, ...)
+/* —— CLI 回复通道抽象：bridge_cli_process 设置当前通道（mutex 串行化）—— */
+static bridge_cli_reply_t s_cli_cur_reply;
+static void *s_cli_cur_arg;
+static const char *s_cli_cur_channel;
+static SemaphoreHandle_t s_cli_lock;
+
+/* 公共入口（bridge_web 复用）：处理一行文本。前缀不符返回 false，
+ * 调用方把原行穿透下发。reply/arg/channel 仅在本次处理期间生效。 */
+bool bridge_cli_process(char *line, bridge_cli_reply_t reply, void *arg, const char *channel)
+{
+    if (!s_cli_lock || !reply) return false;
+    xSemaphoreTake(s_cli_lock, portMAX_DELAY);
+    s_cli_cur_reply = reply;
+    s_cli_cur_arg = arg;
+    s_cli_cur_channel = channel;
+    bool consumed = cli_handle_line(line);
+    xSemaphoreGive(s_cli_lock);
+    return consumed;
+}
+
+/* RFC2217 socket 通道的回复实现 */
+static void cli_reply_socket(const char *line, void *arg)
+{
+    locked_send((int)(intptr_t)arg, (const uint8_t *)line, strlen(line));
+}
+
+/* CLI 回复函数（格式化一行 + \r\n 结尾，走当前通道） */
+static void cli_reply(const char *fmt, ...)
 {
     char buf[384];
     va_list ap;
@@ -112,13 +140,13 @@ static void cli_reply(int fd, const char *fmt, ...)
     va_end(ap);
     if (n > 0 && n < (int)sizeof(buf) - 3) {
         buf[n++] = '\r'; buf[n++] = '\n'; buf[n] = '\0';
-        locked_send(fd, (const uint8_t *)buf, (size_t)n);
+        if (s_cli_cur_reply) s_cli_cur_reply(buf, s_cli_cur_arg);
     }
 }
 
 /* CLI 命令处理器，返回 true 表示这行是 CLI 命令已被消费 */
 #include <stdarg.h>
-static bool cli_handle_line(int fd, char *line)
+static bool cli_handle_line(char *line)
 {
     /* 去掉尾部 \r\n */
     size_t len = strlen(line);
@@ -139,18 +167,20 @@ static bool cli_handle_line(int fd, char *line)
         /* !airsn status — 版本/板名必须来自编译期宏，禁止硬编码（套娃场景下
          * 第一台桥的应答是用户辨认链路身份的唯一依据） */
         extern uint32_t bridge_uart_get_baud(void);
-        cli_reply(fd, "AirSerial %s (%s)", CLI_VERSION, AIRSERIAL_VERSION);
+        cli_reply("AirSerial %s (%s)", CLI_VERSION, AIRSERIAL_VERSION);
 #if defined(CONFIG_BOARD_TYPE_STICKS3)
-        cli_reply(fd, "  chip:   ESP32-S3 M5Stack StickS3");
+        cli_reply("  chip:   ESP32-S3 M5Stack StickS3");
 #elif defined(CONFIG_BOARD_TYPE_N16R8)
-        cli_reply(fd, "  chip:   ESP32-S3 N16R8 devkit");
+        cli_reply("  chip:   ESP32-S3 N16R8 devkit");
 #elif defined(CONFIG_BOARD_TYPE_CARD_PUTER_ADV)
-        cli_reply(fd, "  chip:   ESP32-S3 Cardputer ADV");
+        cli_reply("  chip:   ESP32-S3 Cardputer ADV");
+#elif defined(CONFIG_BOARD_TYPE_POWERHUB)
+        cli_reply("  chip:   ESP32-S3 M5Stack PowerHub");
 #else
-        cli_reply(fd, "  chip:   ESP32-S3 (board unset)");
+        cli_reply("  chip:   ESP32-S3 (board unset)");
 #endif
-        cli_reply(fd, "  uart:   %lu baud 8N1", (unsigned long)bridge_uart_get_baud());
-        cli_reply(fd, "  client: RFC2217 active");
+        cli_reply("  uart:   %lu baud 8N1", (unsigned long)bridge_uart_get_baud());
+        cli_reply("  client: %s", s_cli_cur_channel ? s_cli_cur_channel : "RFC2217");
         return true;
     }
 
@@ -158,13 +188,13 @@ static bool cli_handle_line(int fd, char *line)
         /* !airsn set baud 9600 */
         uint32_t baud = (uint32_t)strtoul(cmd + 9, NULL, 10);
         if (baud == 0 || baud > 5000000) {
-            cli_reply(fd, "ERR: invalid baud rate");
+            cli_reply("ERR: invalid baud rate");
         } else {
             extern bool bridge_uart_set_baud(uint32_t baud);
             if (bridge_uart_set_baud(baud)) {
-                cli_reply(fd, "OK baud=%lu", (unsigned long)baud);
+                cli_reply("OK baud=%lu", (unsigned long)baud);
             } else {
-                cli_reply(fd, "ERR: set baud failed");
+                cli_reply("ERR: set baud failed");
             }
         }
         return true;
@@ -179,7 +209,7 @@ static bool cli_handle_line(int fd, char *line)
         int inlen = 0;
         int n = sscanf(cmd + 8, "%x %x %x %x %d", &bmtype, &breq, &wval, &widx, &inlen);
         if (n < 3) {
-            cli_reply(fd, "ERR: usage: usbctrl <bmtype> <req> <wvalue> [windex] [inlen]");
+            cli_reply("ERR: usage: usbctrl <bmtype> <req> <wvalue> [windex] [inlen]");
             return true;
         }
         if (inlen < 0 || inlen > 8) inlen = 0;
@@ -195,9 +225,9 @@ static bool cli_handle_line(int fd, char *line)
             for (int i = 0; i < inlen && p < (int)sizeof(hex) - 3; i++) {
                 p += snprintf(hex + p, sizeof(hex) - p, "%02x ", inbuf[i]);
             }
-            cli_reply(fd, "OK %s in=[%s]", esp_err_to_name(r), hex);
+            cli_reply("OK %s in=[%s]", esp_err_to_name(r), hex);
         } else {
-            cli_reply(fd, "%s %s", (r == ESP_OK ? "OK" : "ERR"), esp_err_to_name(r));
+            cli_reply("%s %s", (r == ESP_OK ? "OK" : "ERR"), esp_err_to_name(r));
         }
         return true;
     }
@@ -214,15 +244,15 @@ static bool cli_handle_line(int fd, char *line)
                 uint8_t v = 0;
                 esp_err_t r = nvs_get_u8(h, "usb_host_on", &v);
                 nvs_close(h);
-                cli_reply(fd, "OK usbhost=%s (NVS)", (r == ESP_OK && v == 1) ? "on" : "off");
+                cli_reply("OK usbhost=%s (NVS)", (r == ESP_OK && v == 1) ? "on" : "off");
             } else {
-                cli_reply(fd, "ERR: nvs open failed");
+                cli_reply("ERR: nvs open failed");
             }
             return true;
         }
         bool want_on = (strncmp(arg, "on", 2) == 0);
         if (!want_on && strncmp(arg, "off", 3) != 0) {
-            cli_reply(fd, "ERR: usage: usbhost [on|off]");
+            cli_reply("ERR: usage: usbhost [on|off]");
             return true;
         }
         nvs_handle_t h;
@@ -232,7 +262,7 @@ static bool cli_handle_line(int fd, char *line)
             nvs_commit(h);
             nvs_close(h);
         }
-        cli_reply(fd, "OK usbhost=%s, rebooting...", want_on ? "on" : "off");
+        cli_reply("OK usbhost=%s, rebooting...", want_on ? "on" : "off");
         vTaskDelay(pdMS_TO_TICKS(300));
         esp_restart();
         return true;
@@ -240,7 +270,7 @@ static bool cli_handle_line(int fd, char *line)
 
     if (strncmp(cmd, "restart", 7) == 0 && (cmd[7] == '\0' || cmd[7] == ' ')) {
         /* !airsn restart */
-        cli_reply(fd, "restarting...");
+        cli_reply("restarting...");
         vTaskDelay(pdMS_TO_TICKS(200));
         esp_restart();
         return true;
@@ -248,7 +278,7 @@ static bool cli_handle_line(int fd, char *line)
 
     if (strncmp(cmd, "hello", 5) == 0 && (cmd[5] == '\0' || cmd[5] == ' ')) {
         /* !airsn hello — 彩蛋 */
-        cli_reply(fd, "Hello, pioneer of the new era.");
+        cli_reply("Hello, pioneer of the new era.");
         return true;
     }
 
@@ -264,7 +294,7 @@ static bool cli_handle_line(int fd, char *line)
         size_t crx, ctx, ctf;
         bridge_usb_host_debug(&crx, &ctx, &ctf);
         long up_ms = (long)(esp_timer_get_time() / 1000);
-        cli_reply(fd, "boot=%08lx up=%ldms rx_total=%lu tx_total=%lu rxbp=%lu txdrop=%lu rfc_w=%lu rfc_r=%lu fionread_max=%lu uart_rx=%lu ufifo=%lu ubuf=%lu ufrm=%lu upar=%lu ubrk=%lu cdc_rx=%lu cdc_tx=%lu cdc_txf=%lu",
+        cli_reply("boot=%08lx up=%ldms rx_total=%lu tx_total=%lu rxbp=%lu txdrop=%lu rfc_w=%lu rfc_r=%lu fionread_max=%lu uart_rx=%lu ufifo=%lu ubuf=%lu ufrm=%lu upar=%lu ubrk=%lu cdc_rx=%lu cdc_tx=%lu cdc_txf=%lu",
                   (unsigned long)s_boot_magic, up_ms,
                   (unsigned long)rx, (unsigned long)tx,
                   (unsigned long)bp, (unsigned long)drop,
@@ -278,7 +308,7 @@ static bool cli_handle_line(int fd, char *line)
         bridge_serial_sub_stats_t subs[BRIDGE_SERIAL_MAX_SUBSCRIBERS];
         int n = bridge_serial_sub_stats_all(subs, BRIDGE_SERIAL_MAX_SUBSCRIBERS);
         for (int i = 0; i < n; i++) {
-            cli_reply(fd, "  sub '%s': drop=%lu space=%lu",
+            cli_reply("  sub '%s': drop=%lu space=%lu",
                       subs[i].name, (unsigned long)subs[i].drop_cnt,
                       (unsigned long)subs[i].space_left);
         }
@@ -635,7 +665,8 @@ static void tcp_to_ser_task(void *arg)
                     /* 前缀已命中：攒到行尾再裁决（合法命令消费 / 不认识则穿透），期间字节不下发 */
                     if (b == '\n') {
                         cli_buf[cli_len] = '\0';
-                        if (!cli_handle_line(fd, cli_buf)) {
+                        if (!bridge_cli_process(cli_buf, cli_reply_socket,
+                                                (void *)(intptr_t)fd, "RFC2217")) {
                             /* 前缀命中但命令字不认识：整行补 \n 原样穿透给目标板。
                              * armed 期间没有任何字节下发过，此处回放时序即原始时序。 */
                             cli_buf[cli_len++] = '\n';
@@ -926,6 +957,7 @@ esp_err_t bridge_rfc2217_start(uint16_t port)
     s_boot_magic = esp_random() | 0x80000000u;
     if (s_lock == NULL) {
         s_lock = xSemaphoreCreateMutex();
+        s_cli_lock = xSemaphoreCreateMutex();
         if (s_lock == NULL) {
             return ESP_ERR_NO_MEM;
         }

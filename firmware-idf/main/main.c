@@ -52,6 +52,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #define TAG "airserial"
 
@@ -142,6 +143,9 @@ static esp_err_t usb_host_status_handler(httpd_req_t *req)
 static int s_cdc_retry_count;
 static esp_err_t s_cdc_retry_last_err;
 static TaskHandle_t s_cdc_retry_task_hdl;   /* 掉线事件即时唤醒快速重开 */
+static uint16_t s_vmusb_mv_cache;
+static int16_t  s_vmusb_ma_cache;
+static bool     s_backfeed_trip_cache;
 
 static esp_err_t usb_debug_handler(httpd_req_t *req)
 {
@@ -150,7 +154,9 @@ static esp_err_t usb_debug_handler(httpd_req_t *req)
         httpd_resp_sendstr(req, "{\"error\":\"USB Host not enabled\"}");
         return ESP_OK;
     }
-    char buf[256];
+    board_powerhub_vmusb_get(&s_vmusb_ma_cache, &s_vmusb_mv_cache);
+    s_backfeed_trip_cache = board_powerhub_backfeed_tripped();
+    char buf[384];
     int ver = bridge_usb_host_ch340_version();
     char ver_str[12];
     if (ver >= 0 && ver <= 0xFF) {
@@ -160,13 +166,16 @@ static esp_err_t usb_debug_handler(httpd_req_t *req)
     }
     snprintf(buf, sizeof(buf),
              "{\"host_enabled\":true,\"cdc_open\":%s,\"retry_count\":%d,\"last_err\":%d,\"uart_ready\":%s"
-             ",\"wch\":%s,\"ch340_ver\":%s,\"ch340_clone\":%s}",
+             ",\"wch\":%s,\"ch340_ver\":%s,\"ch340_clone\":%s"
+             ",\"vmusb_mv\":%u,\"vmusb_ma\":%d,\"backfeed_trip\":%s}",
              bridge_usb_host_is_open() ? "true" : "false",
              s_cdc_retry_count, (int)s_cdc_retry_last_err,
              bridge_uart_is_ready() ? "true" : "false",
              bridge_usb_host_is_wch() ? "true" : "false",
              ver_str,
-             bridge_usb_host_ch340_is_clone() ? "true" : "false");
+             bridge_usb_host_ch340_is_clone() ? "true" : "false",
+             s_vmusb_mv_cache, s_vmusb_ma_cache,
+             s_backfeed_trip_cache ? "true" : "false");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }
@@ -335,28 +344,114 @@ static void cdc_disconnect_cb(void *arg)
 }
 
 /* — cdc_retry_task: 后台重扫 CDC-ACM（Host 模式下插/拔 USB 设备自动重连）— */
+static int s_cdc_fail_streak;   /* 连续 open 失败计数 → 每 2 次触发 A/C 口互切 */
+
 static void cdc_retry_task(void *arg)
 {
     (void)arg;
-    ESP_LOGI(TAG, "cdc_retry_task started — fast reopen on disconnect, 5s idle scan...");
-    vTaskDelay(pdMS_TO_TICKS(8000));  /* 等 USB Host PHY 稳定 + 设备枚举 */
+    ESP_LOGI(TAG, "cdc_retry_task started — first open immediately, 5s idle scan...");
+    vTaskDelay(pdMS_TO_TICKS(300));  /* 让 usb_host lib 完成安装 */
     while (1) {
         if (bridge_usb_host_is_open()) {
             /* 在线：5s 空闲节拍，掉线通知可立即打断 */
+            s_cdc_fail_streak = 0;
             xTaskNotifyWait(0, 0xFFFFFFFF, NULL, pdMS_TO_TICKS(5000));
             continue;
         }
-        ESP_LOGI(TAG, "cdc_retry #%d: trying bridge_usb_host_open(2000)...", ++s_cdc_retry_count);
-        esp_err_t r = bridge_usb_host_open(2000);
+        ESP_LOGI(TAG, "cdc_retry #%d: trying bridge_usb_host_open(1500)...", ++s_cdc_retry_count);
+        esp_err_t r = bridge_usb_host_open(1500);
         s_cdc_retry_last_err = r;
         if (r == ESP_OK) {
+            s_cdc_fail_streak = 0;
             bridge_serial_set_transport(bridge_usb_host_transport());
             ESP_LOGI(TAG, "=== CDC-ACM OPENED via retry! bridge READY ===");
             continue;
         }
         ESP_LOGI(TAG, "cdc_retry: still no device (%s)", esp_err_to_name(r));
+        /* PowerHub 正面 A/C 双口：连续 2 次失败互切 mux（~3.5s/轮，无设备时空翻无害）*/
+        if (++s_cdc_fail_streak % 2 == 0) {
+            board_usb_host_switch_alt();
+        }
         /* 离线：短间隔重试；掉线通知把 500ms 等待压成 0，复位重枚举几乎下一轮就抓到 */
         xTaskNotifyWait(0, 0xFFFFFFFF, NULL, pdMS_TO_TICKS(500));
+    }
+}
+
+/* — led_sem_task: headless 板 WS2812 状态语义（250ms tick，差量写 I2C）—
+ * #7 OK键背光=心跳（2s 暗绿脉冲）· #6 同区=电源（绿=外电 / 充电呼吸 / 黄=电池 / 红=低电）
+ * #5 SEL键旁=WiFi（绿=STA · 蓝=AP 待配网 · 橙闪=重连中）
+ * #0/#1 正面C/A口旁=USB路由（暗蓝）· #1 叠加倒灌 TRIP 红快闪（最高优先级）
+ * #2/3/4=备用灭。灯定义按物理位置分组：5/6/7 设备状态，0-4 接口状态。 */
+static void led_sem_task(void *arg)
+{
+    (void)arg;
+    typedef struct { uint8_t r, g, b, bri; } led_t;
+    static led_t last[8];
+    memset(last, 0xFF, sizeof(last));   /* 强制首轮全写 */
+    uint16_t bat_mv = 0;
+    uint8_t chg = 0, ext = 0;
+    int pct = 0;
+
+    for (uint32_t tick = 0; ; tick++) {
+        if (tick % 32 == 0) {   /* ~2s 轮询电源状态 */
+            board_powerhub_pwr_get(&bat_mv, &pct, &chg, &ext);
+        }
+
+        led_t now[8] = {0};
+
+        /* #7 心跳：每 2s 一个 250ms 青脉冲（#6 绿常亮时绿色心跳会被淹没） */
+        if (tick % 32 < 4) now[7] = (led_t){0, 180, 180, 50};
+
+        /* #6 电源（OK 键背光）：充电=橙呼吸（64 阶 ~3.8s）；
+         * 不充电时按电量 绿/黄/红 常亮。满电后 STM32 仍报 chg=1，
+         * 必须同时有外电才算真在充。 */
+        if (ext == 1 && chg == 1 && pct < 100) {
+            /* 64 阶 sin 呼吸（20-120）。STM32 满电涓流期仍报 charging，
+             * 必须 pct<100 才算真在充，否则满电后呼吸停不下来 */
+            uint8_t bri = (uint8_t)(70.0f + 50.0f *
+                          sinf(6.2831853f * (float)(tick % 64) / 64.0f));
+            now[6] = (led_t){220, 100, 0, bri};
+        } else if (pct > 60) {
+            now[6] = (led_t){0, 220, 0, 120};     /* 高电量/充满：绿常亮 */
+        } else if (pct > 15) {
+            now[6] = (led_t){220, 180, 0, 120};   /* 中电量：黄常亮 */
+        } else if (pct > 0) {
+            now[6] = (led_t){220, 0, 0, 120};     /* 低电量：红常亮 */
+        } else {
+            now[6] = (led_t){0, 0, 0, 0};         /* 读不到电源状态：灭 */
+        }
+
+        /* #5 WiFi */
+        if (bridge_wifi_is_connected()) {
+            now[5] = (led_t){0, 200, 0, 12};
+        } else if (bridge_wifi_ap_is_active()) {
+            now[5] = (led_t){0, 0, 200, 12};
+        } else {
+            now[5] = (tick % 16 < 8) ? (led_t){220, 120, 0, 12} : (led_t){0, 0, 0, 0};
+        }
+
+        /* #0/#1 USB 接口状态 + 倒灌报警。
+         * 语义：未枚举到设备=两口蓝常亮（待命）；枚举到设备=当前口绿常亮（工作）；倒灌=红闪最高优先级 */
+        if (board_powerhub_backfeed_tripped()) {
+            now[1] = (tick % 8 < 4) ? (led_t){220, 0, 0, 200} : (led_t){0, 0, 0, 0};
+        } else if (s_usb_host_enabled) {
+            if (bridge_usb_host_is_open()) {
+                uint8_t mode = board_powerhub_usb_mode_get();
+                uint8_t idx = (mode == 1) ? 1 : (mode == 2) ? 0 : 255;
+                if (idx != 255) now[idx] = (led_t){0, 220, 0, 12};
+            } else {
+                now[0] = (led_t){0, 0, 180, 12};
+                now[1] = (led_t){0, 0, 180, 12};
+            }
+        }
+
+        for (int i = 0; i < 8; i++) {
+            if (memcmp(&now[i], &last[i], sizeof(led_t)) != 0) {
+                board_led_raw(i, now[i].r, now[i].g, now[i].b, now[i].bri);
+                last[i] = now[i];
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(60));   /* FreeRTOS 10ms 粒度，实际 ~62.5ms/tick */
     }
 }
 
@@ -660,17 +755,17 @@ void app_main(void)
         }
         ESP_LOGW(TAG, "  → POST /api/usb/host_off + reboot to recover Device mode");
 
-        if (bridge_usb_host_init() == ESP_OK) {
+        /* 板级 Host 前置准备（PowerHub: 开 PC_USB 5V + USB Switch 切正面口；
+         * 其他板弱符号空实现）*/
+        esp_err_t prep = board_usb_host_prepare();
+        if (prep != ESP_OK) {
+            ESP_LOGE(TAG, "board_usb_host_prepare failed: %s — Host init aborted",
+                     esp_err_to_name(prep));
+        } else if (bridge_usb_host_init() == ESP_OK) {
             bridge_usb_host_set_disconnect_callback(cdc_disconnect_cb, NULL);
-            esp_err_t op = bridge_usb_host_open(5000);
-            if (op == ESP_OK) {
-                bridge_serial_set_transport(bridge_usb_host_transport());
-                ESP_LOGI(TAG, "=== CDC-ACM device OPENED, bridge READY (Host transport) ===");
-            } else {
-                ESP_LOGW(TAG, "No CDC-ACM device at boot (%s) — UART stays active",
-                         esp_err_to_name(op));
-            }
-            /* 无论 open 成功与否，都启动 retry task（兼容设备后插 / open 假阳性）*/
+            /* open 全权交给 cdc_retry_task——boot 不做同步 open，
+             * 避免无设备/错口时 app_main 白等数秒拖慢 WiFi/UI 起动 */
+            ESP_LOGI(TAG, "USB Host ready — CDC open deferred to retry task");
             BaseType_t ok = xTaskCreate(cdc_retry_task, "cdc_retry", 3072, NULL, 3, &s_cdc_retry_task_hdl);
             if (ok != pdPASS) ESP_LOGE(TAG, "cdc_retry task create failed");
         } else {
@@ -694,6 +789,12 @@ void app_main(void)
                 (void)bridge_mdns_start(s_tcp_port, s_tcp_port + 1);
             }
         }
+    }
+
+    /* —— 7. headless 板状态灯语义（PowerHub WS2812；其他板空驱动，不建任务）—— */
+    if (board_get_tier() == BOARD_TIER_0_HEADLESS) {
+        BaseType_t ok = xTaskCreate(led_sem_task, "led_sem", 2048, NULL, 1, NULL);
+        if (ok != pdPASS) ESP_LOGE(TAG, "led_sem task create failed");
     }
 
     ESP_LOGI(TAG, "========== AirSerial boot complete ==========");
